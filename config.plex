@@ -1,0 +1,14 @@
+# Configuration stuff.
+
+# uinput_dev /dev/uinput
+cmdport 1234
+irdev /dev/cu.usbmodem3D11
+
+jitter 15
+gap 8
+packet_timeout 100000           # usecs of inactivity before terminating packet
+debounce_time 333333            # usecs of continuous signal before repeat
+
+
+# Buttons
+include dvdrw.buttons

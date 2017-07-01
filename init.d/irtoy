@@ -1,0 +1,58 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          irtoy
+# Required-Start:    
+# Required-Stop:     
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: IRToy driver
+# Description:       IRToy driver
+### END INIT INFO
+
+NAME=irtoy
+DAEMON=/usr/bin/mythtv_irtoy
+DESC="IRToy interface controller"
+PIDFILE=/var/run/$NAME.pid
+IRTOY_CONFIG=/etc/irtoy.config
+
+test -x $DAEMON || exit 0
+. /lib/lsb/init-functions
+
+
+case "$1" in
+	start)
+		log_daemon_msg "Starting irtoy" $NAME
+                start-stop-daemon --start \
+                    --exec $DAEMON -- -d -f $IRTOY_CONFIG
+		log_end_msg $?
+		;;
+	stop)
+		log_daemon_msg "Stopping irtoy" $NAME
+		start-stop-daemon --stop --exec $DAEMON
+		RETVAL=$?
+                if [ "$RETVAL" = 2 ]; then
+                    return 2
+                fi
+                rm -f $PIDFILE
+		log_end_msg "$RETVAL"
+                return "$RETVAL"
+		;;
+	restart)
+		log_daemon_msg "Restarting irtoy" $NAME
+		$0 stop
+		$0 start
+		;;
+	reload|force-reload)
+		log_daemon_msg "Reloading irtoy by restarting"
+		$0 restart
+		;;
+	status)
+		start-stop-daemon --status --exec $DAEMON && exit 0 || exit $?
+		;;
+	*)
+		log_action_msg "Usage: $0 {start|stop|restart}"
+		exit 2
+		;;
+esac
+exit 0
+

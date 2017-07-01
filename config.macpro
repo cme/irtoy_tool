@@ -1,0 +1,132 @@
+# Configuration stuff.
+
+# uinput_dev /dev/uinput
+cmdport 1234
+irdev /dev/cu.usbmodem3D11
+
+jitter 15
+gap 8
+packet_timeout 100000           # usecs of inactivity before terminating packet
+debounce_time 333333            # usecs of continuous signal before repeat
+
+
+# Buttons
+include dvdrw.buttons
+include tivo.buttons
+
+# Key mappings
+keymap default
+
+  # Red button - plex!
+  key tivo_red begin
+    set_keymap plex
+    applescript 'if application "VLC" is running then tell application "VLC" to quit'
+    applescript 'if application "Kodi" is running then tell application "Kodi" to quit'
+    applescript 'tell application "Plex Home Theater" to activate'
+  end
+
+  # Yellow button - VLC
+  key tivo_yellow begin
+    set_keymap vlc
+    applescript 'if application "Plex Home Theater" is running then tell application "Plex Home Theater" to quit'
+    applescript 'if application "Kodi" is running then tell application "Kodi" to quit'
+    applescript 'tell application "VLC" to activate'
+  end
+
+  key tivo_green begin
+    set_keymap kodi
+    applescript 'if application "Plex Home Theater" is running then tell application "Plex Home Theater" to quit'
+    applescript 'if application "Kodi" is running then tell application "Kodi" to quit'
+
+    applescript 'tell application "Kodi" to activate'
+  end
+
+  # "Classic" navigation.
+  key tivo_left keypress LeftArrow
+  key tivo_right keypress RightArrow
+  key tivo_up keypress UpArrow
+  key tivo_down keypress DownArrow
+  key tivo_ok keypress Return
+
+  key tivo_0 keypress "0"
+  key tivo_1 keypress "1"
+  key tivo_2 keypress "2"
+  key tivo_3 keypress "3"
+  key tivo_4 keypress "4"
+  key tivo_5 keypress "5"
+  key tivo_6 keypress "6"
+  key tivo_7 keypress "7"
+  key tivo_8 keypress "8"
+  key tivo_9 keypress "9"
+
+  key tivo_power keypress "command+q"
+
+end
+
+# Keymap for VLC
+keymap vlc
+  inherit default
+
+  # Forwards and backwards
+  key tivo_forward keypress command+control+RightArrow
+  key tivo_rewind keypress command+control+LeftArrow
+  key tivo_end keypress command+shift+RightArrow
+  key tivo_back keypress command+shift+LeftArrow
+
+  # Open files
+  key tivo_guide begin
+    keypress command+o
+    keypress command+d
+  end
+  key tivo_myshows begin
+    keypress command+o
+    keypress command+d
+  end
+  key tivo_home keypress command+d
+
+  key tivo_subtitles keypress s
+  key tivo_zoom keypress command+f
+  key tivo_mute keypress m
+  key tivo_stop keypress command+.
+  key tivo_pause keypress Space
+
+end
+
+keymap kodi
+  inherit default
+
+  # Kodi navigation
+  key tivo_back keypress Delete
+  key tivo_myshows keypress Escape
+  key tivo_play keypress ANSI_P
+  key tivo_home keypress ANSI_H
+  key tivo_zoom keypress ANSI_Backslash
+end
+
+keymap plex
+  inherit default
+
+  # Plex navigation
+  key tivo_back keypress Escape
+  key tivo_myshows keypress Escape
+  key tivo_play keypress ANSI_P
+  key tivo_home keypress ANSI_H
+  key tivo_zoom keypress ANSI_Backslash
+
+  key tivo_pause keypress Space
+  key tivo_stop keypress ANSI_X
+  
+  key tivo_forward keypress RightArrow
+  key tivo_rewind keypress LeftArrow
+
+  key tivo_forward keypress ANSI_F
+  key tivo_rewind keypress ANSI_R
+  key tivo_info keypress ANSI_I
+  key tivo_subtitles keypress ANSI_S
+  key tivo_slow keypress ANSI_O # progress bar
+
+  key tivo_volup keypress ANSI_KeypadPlus
+  key tivo_voldown keypress ANSI_KeypadMinus
+  key tivo_mute keypress ANSI_A # Cycle audio tracks
+
+end

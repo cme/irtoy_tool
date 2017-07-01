@@ -1,0 +1,17 @@
+# Test config for the MacPro setup
+#
+include "config.macpro"
+
+# uinput_dev /dev/uinput
+cmdport 1234
+irdev ir_input2
+# irdev key_9.bin
+# jitter 10
+jitter 8
+packet_timeout 100000
+# debounce_time 1000000
+
+# Set debounce time to 0 because we're dealing with a file input
+debounce_time 0
+
+

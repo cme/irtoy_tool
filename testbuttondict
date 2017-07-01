@@ -1,0 +1,51 @@
+button "dvd_button1" { 5 5 10 }
+button dvd_5 { 1 2 5 }
+button dvd_1 { 7 7 99 44 }
+button dvd_2 { 77 7 7 9 44 }
+button dvd_mute { 1 2 3 4 }
+button dvd_exit { 99 1 2 }
+
+button "dvd_0" { }
+button "dvd_1" { }
+button dvd_2 { }
+button dvd_3 { }
+button dvd_4 { }
+button dvd_5 { }
+button dvd_6 { }
+button dvd_7 { }
+button dvd_8 { }
+button dvd_9 { }
+button dvd_left { }
+button dvd_right { }
+button dvd_up { }
+button dvd_down { }
+button dvd_ok { }
+button dvd_cancel { }
+button dvd_menu { }
+
+button cable_0 { }
+button cable_1 { }
+button cable_2 { }
+button cable_3 { }
+button cable_4 { }
+button cable_5 { }
+button cable_6 { }
+button cable_7 { }
+button cable_8 { }
+button cable_9 { }
+button cable_ok { }
+
+button tv_power { }
+button tv_input_select { }
+
+button key_0  { 8 25 6 30 16 23 21 12 29 21 16 13 24 11 14 24 26 } 
+button key_1  { 17 24 8 19 8 13 14 20 23 28 9 14 15 23 18 23 6 } 
+button key_2  { 8 28 7 13 13 6 21 26 13 19 9 25 11 18 24 12 20 } 
+button key_3  { 15 23 28 14 24 17 23 16 24 14 23 10 24 8 20 12 28 } 
+button key_4  { 11 18 7 23 27 17 28 8 25 19 11 23 26 27 23 17 12 } 
+button key_5  { 24 18 15 19 22 8 26 20 17 14 22 27 10 9 21 23 8 } 
+button key_6  { 11 12 22 11 24 6 10 12 25 18 11 20 17 13 23 11 14 } 
+button key_7  { 16 26 24 10 9 18 21 25 14 23 23 13 14 25 18 26 17 } 
+button key_8  { 27 24 17 18 20 21 25 15 11 29 8 22 21 28 23 21 21 } 
+button key_9  { 23 26 12 27 10 26 21 16 27 24 15 17 23 29 19 7 22 } 
+

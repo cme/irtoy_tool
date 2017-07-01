@@ -1,0 +1,24 @@
+Main irtoy_tool : irtoy_tool.c dict.c irtoy.c 
+  error.c keywords.c mac_actions.c ;
+
+
+rule MkDefs
+{
+  DEPENDS $(<) : $(>) ;
+}
+actions MkDefs
+{
+  perl mk_defs.pl < $(>) > $(<)
+}
+
+MkDefs irtoy_tool.defs : irtoy_tool.c ;
+
+rule MkKeywords
+{
+  DEPENDS $(<) : $(>) ;
+}
+actions MkKeywords
+{
+  perl update_keywords.pl $(>) > $(<) ;
+}
+MkKeywords keywords.inc : irtoy_tool.c ;
