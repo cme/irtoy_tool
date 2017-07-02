@@ -1,0 +1,3 @@
+[submodule "toolbag"]
+	path = toolbag
+	url = https://github.com/cme/toolbag
