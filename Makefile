@@ -1,9 +1,10 @@
 CFLAGS += -Wall
 CFLAGS += -ggdb
+CFLAGS += -Itoolbag/dict
 
 INDENT = indent -nut
 
-OBJS=irtoy_tool.o dict.o irtoy.o error.o keywords.o mac_actions.o
+OBJS=irtoy_tool.o toolbag/dict/dict.o irtoy.o error.o keywords.o mac_actions.o
 
 
 # Linking
@@ -14,10 +15,10 @@ irtoy_tool:	$(OBJS)
 irtoy_tool.defs: irtoy_tool.c mk_defs.pl
 		perl ./mk_defs.pl irtoy_tool.c > irtoy_tool.defs
 
-dict.o:		dict.c	dict.h
+dict.o:		toolbag/dict/dict.c	toolbag/dict/dict.h
 error.o:	error.h
-keywords.o:	keywords.h dict.h keywords.inc
-irtoy_tool.o:	error.h irtoy.h dict.h keywords.h keywords.inc mac_actions.h
+keywords.o:	keywords.h toolbag/dict/dict.h keywords.inc
+irtoy_tool.o:	error.h irtoy.h toolbag/dict/dict.h keywords.h keywords.inc mac_actions.h
 mac_actions.o:	mac_actions.h
 
 indent:
@@ -28,11 +29,6 @@ indent:
 check-indent:
 	$(INDENT) - <  irtoy_tool.c | diff -C1 irtoy_tool.c -
 
-dict.c dict.h:
-		@echo "---"
-		@echo "Must import (symlink?) dict.h and dict.c from toolbag"
-		@echo "---"
-		@false
 
 keywords.inc.new:	irtoy_tool.c mac_actions.c update_keywords.pl
 			perl update_keywords.pl $< > keywords.inc.new 

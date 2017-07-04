@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.6)
 
 project(irtoy)
 add_executable(irtoy_tool
-               irtoy_tool.c dict.c irtoy.c error.c
+               irtoy_tool.c toolbag/dict/dict.c irtoy.c error.c
                keywords.c mac_actions.c)
 
 add_custom_command(
@@ -13,3 +13,4 @@ add_custom_command(
 )
 
 include_directories( ${CMAKE_CURRENT_BINARY_DIR} )
+include_directories( ${CMAKE_CURRENT_SOURCE_DIR}/toolbag/dict )
