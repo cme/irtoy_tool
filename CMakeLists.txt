@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.6)
 
 project(irtoy)
 add_executable(irtoy_tool
-               irtoy_tool.c toolbag/dict/dict.c irtoy.c error.c
+               irtoy_tool.c toolbag/dict/dict.c irtoy.c error.c server.c
                keywords.c mac_actions.c)
 
 add_custom_command(

@@ -49,27 +49,11 @@
 #include "error.h"
 #include "keywords.h"
 #include "mac_actions.h"
+#include "server.h"
 
 int ir_packet_timeout = 100000;
 int ir_debounce_time = 250000;  /* initial repeat delay */
 int ir_repeat_delay = 0;        /* current repeat delay */
-
-typedef struct Connection Connection;
-typedef struct Server Server;
-typedef struct Action Action;
-typedef struct Keymap Keymap;
-
-bool handle_button (Server * v, const char *button);
-IRPacket *transmit_button (Server * v, const char *button);
-
-bool mythremote_command (Connection * n, const char *command);
-bool vlc_command (Connection * n, const char *command);
-
-bool send_myth_command (Server * v, const char *command);
-bool send_vlc_command (Server * v, const char *command);
-bool send_keypress (Server * v, int key);
-bool send_key (Server * v, int key, int value);
-
 
 /* ------------------------------------------------------------
  * Testing stuff
@@ -477,39 +461,17 @@ test_main (int argc, char *argv[])
  * XXX TODO: handle timeouts better. Set time?
  */
 
-struct Connection
-{
-  const char *tag;
-  Server *server;
-  char *id;
-  int fd;
-  Connection *next;
-  Connection *prev;
-  void (*can_write) (Connection * n, void *h);
-  void (*can_read) (Connection * n, void *h);
-  void (*except) (Connection * n, void *h);
-  void (*timeout) (Connection * n, void *h);
-
-  void *h;
-};
-
-/* IR-specific stuff for servers. */
 typedef struct IRConnectionInfo IRConnectionInfo;
+typedef struct IRServerInfo IRServerInfo;
+
 struct IRConnectionInfo {
+  IRServerInfo *si;
   char *buffer;
   char *end;
 };
 
-struct Server
-{
-  const char *tag;
-  Connection *first;
-  Connection *last;
-  void *h;
-};
-
-typedef struct IRServerInfo IRServerInfo;
 struct IRServerInfo {
+  Server *server;
   Dict *keymaps;                /* name -> Keymap* */
   Keymap *current_keymap;
 
@@ -531,24 +493,21 @@ struct IRServerInfo {
   char *unknown_key;
 };
 
-Server *
-new_server (void)
-{
-  Server *v = malloc (sizeof *v);
-  v->tag = "Server";
-  v->first = NULL;
-  v->last = NULL;
-  v->h = NULL;
-  return v;
-}
+bool handle_button (IRServerInfo *si, const char *button);
+IRPacket *transmit_button (IRServerInfo *si, const char *button);
 
-Server *
-new_irserver (void)
+bool mythremote_command (IRServerInfo *si, const char *command);
+bool vlc_command (IRServerInfo *si, const char *command);
+
+bool send_myth_command (IRServerInfo *si, const char *command);
+bool send_keypress (IRServerInfo *si, int key);
+bool send_key (IRServerInfo *si, int key, int value);
+
+
+IRServerInfo *
+new_irserverinfo (void)
 {
-  Server *v = new_server ();
   IRServerInfo *si = malloc (sizeof *si);
-  v->h = si;
-
   /* IR specific stuff */
   si->buttondict = NULL;
   si->keymaps = dict_new (NULL);
@@ -560,212 +519,27 @@ new_irserver (void)
   si->uinput = NULL;
   si->verbose = false;
   si->unknown_key = NULL;
-  return v;
+  return si;
 }
 
-Connection *
-new_connection (Server * v, int fd)
-{
-  Connection *n = malloc (sizeof *n);
-
-  n->tag = "Connection";
-  n->server = v;
-  n->next = NULL;
-  n->prev = v->last;
-  if (v->last)
-    v->last->next = n;
-  n->fd = fd;
-  n->id = "(unnamed)";
-  n->can_write = NULL;
-  n->can_read = NULL;
-  n->except = NULL;
-  n->timeout = NULL;
-  if (!v->first)
-    v->first = n;
-  v->last = n;
-  v->h = NULL;
-
-  return n;
-}
-
-Connection *
-new_cmdconnection (Server *v, int fd)
-{
-  Connection *n = new_connection (v, fd);
+IRConnectionInfo *new_irconnectioninfo (IRServerInfo *si) {
   IRConnectionInfo *ci = malloc (sizeof *ci);
-  n->h = ci;
-  /* IR-specific stuff */
-  ci->buffer = NULL;
-  ci->end = NULL;
+  ci->si = si;
+  ci->buffer = malloc (sizeof (char) * BUFSIZ);
+  ci->end = ci->buffer;
+  return ci;
+}
+
+Connection *
+new_cmdconnection (IRServerInfo *si, int fd, IRConnectionInfo *ci)
+{
+  Connection *n;
+  char buffer[BUFSIZ];
+  sprintf (buffer, "cmd connection %d", fd);
+  n = new_connection (si->server, fd, buffer, ci);
   return n;
 }
 
-void
-connection_remove (Connection * n)
-{
-  Server *v = n->server;
-  if (n == v->first)
-    v->first = n->next;
-  if (n == v->last)
-    v->last = n->prev;
-  if (n->next)
-    n->next->prev = n->prev;
-  if (n->prev)
-    n->prev->next = n->next;
-  // XXX really?
-  if (n->h)
-    free (n->h);
-  free (n);
-}
-
-void
-connection_write (Connection * n, const char *data, int count)
-{
-  /* Temporarily set the connection blocking. Blugh. */
-  fcntl (n->fd, F_SETFL, fcntl (n->fd, F_GETFL) & ~O_NONBLOCK);
-  for (;;)
-    {
-      int written;
-      if (count <= 0)
-        break;
-      written = write (n->fd, data, count);
-      if (written < 0)
-        fatal (0, "Couldn't write to connection '%s'", n->id);
-      count -= written;
-      data += written;
-    }
-  /* Set non-blocking again */
-  fcntl (n->fd, F_SETFL, fcntl (n->fd, F_GETFL) | O_NONBLOCK);
-}
-
-Connection *
-server_listenport (Server * v, int port, int backlog)
-{
-  int fd;
-  int reuseaddr = 1;
-  int opts;
-  struct sockaddr_in sa;
-
-  /* Set it up */
-  fd = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if (fd < 0)
-    fatal (0, "Couldn't open socket");
-
-  if (setsockopt (fd, SOL_SOCKET, SO_REUSEADDR,
-                  &reuseaddr, sizeof reuseaddr) < 0)
-    fatal (0, "Couldn't set socket options");
-  opts = fcntl (fd, F_GETFL);
-  if (opts < 0)
-    fatal (0, "Couldn't get opts for socket");
-  if (fcntl (fd, F_SETFL, opts | O_NONBLOCK) < 0)
-    fatal (0, "Couldn't set socket non-blocking");
-
-  opts = fcntl (fd, F_GETFL);
-
-  /* Bind to the port */
-  memset (&sa, '\0', sizeof sa);
-  sa.sin_family = AF_INET;
-  sa.sin_addr.s_addr = INADDR_ANY;
-  sa.sin_port = htons (port);
-  if (bind (fd, (struct sockaddr *) &sa, sizeof sa) < -1)
-    fatal (0, "Couldn't bind port %d", port);
-
-  if (listen (fd, backlog) < -1)
-    fatal (0, "Couldn't listen on port %d", port);
-
-  return new_connection (v, fd);
-}
-
-Connection *
-connection_port (Server * v, char *hostname, int port)
-{
-  int socket_fd;
-  struct hostent *hostinfo;
-  struct sockaddr_in __hostaddr, *hostaddr = &__hostaddr;
-
-  memset (hostaddr, 0, sizeof (struct sockaddr));
-
-  /* Look up address */
-  hostinfo = gethostbyname (hostname);
-  if (!hostinfo)
-    /* fatal (0, "Can't resolve hostname '%s'", hostname); */
-    return NULL;
-
-  hostaddr->sin_family = hostinfo->h_addrtype;
-
-  memcpy (&(hostaddr->sin_addr), hostinfo->h_addr, hostinfo->h_length);
-  hostaddr->sin_port = htons (port);
-
-  socket_fd = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if (socket_fd == -1)
-    fatal (0, "Can't create socket");
-
-  if (connect (socket_fd, (struct sockaddr *) hostaddr, sizeof (*hostaddr)))
-    return NULL;
-
-  return new_connection (v, socket_fd);
-}
-
-void
-server_select (Server * v)
-{
-  Connection *n, *next_n;
-  fd_set readfds, writefds, exceptfds;
-  int high_fd;
-  struct timeval timeout;
-  int rv;
-  int count_active = 0;
-
-  FD_ZERO (&readfds);
-  FD_ZERO (&writefds);
-  FD_ZERO (&exceptfds);
-
-  timeout.tv_sec = 0;
-  timeout.tv_usec = ir_packet_timeout;
-
-  if (v->first == NULL)
-    fatal (0, "Attempt to select on a Server with no connections");
-  high_fd = v->first->fd;
-  for (n = v->first; n; n = n->next)
-    {
-      if (!(n->can_write || n->can_read || n->except))
-        continue;
-      if (n->fd > high_fd)
-        high_fd = n->fd;
-      count_active++;
-
-      if (n->can_write)
-        FD_SET (n->fd, &writefds);
-      if (n->can_read)
-        FD_SET (n->fd, &readfds);
-      if (n->except)
-        FD_SET (n->fd, &exceptfds);
-    }
-  rv = select (high_fd + 1, &readfds, &writefds, &exceptfds, &timeout);
-
-  if (rv == -1)
-    fatal (0, "Error in select");
-  if (rv == 0)
-    {
-      for (n = v->first; n; n = next_n)
-        {
-          next_n = n->next;
-          if (n->timeout)
-            n->timeout (n, n->h);
-        }
-    }
-  else
-    for (n = v->first; n; n = next_n)
-      {
-        next_n = n->next;
-        if (FD_ISSET (n->fd, &exceptfds))
-          n->except (n, n->h);
-        else if (FD_ISSET (n->fd, &readfds))
-          n->can_read (n, n->h);
-        else if (FD_ISSET (n->fd, &writefds))
-          n->can_write (n, n->h);
-      }
-}
 
 /* ------------------------------------------------------------
  * Command server
@@ -776,10 +550,10 @@ can_read_command (Connection * n, void *h)
 {
   /* Dynamic buffer for this transfer */
   char buffer[BUFSIZ];
-  int count = read (n->fd, buffer, BUFSIZ);
+  int fd = connection_fd (n);
+  int count = read (fd, buffer, BUFSIZ);
   int i;
   IRConnectionInfo *ci = (IRConnectionInfo *)h;
-  IRServerInfo *si = (IRServerInfo *)n->h;
 
   for (i = 0; i < count; i++)
     {
@@ -792,7 +566,7 @@ can_read_command (Connection * n, void *h)
           else
             {
               char str[] = "Error: command buffer overrun\n\n";
-              write (n->fd, str, sizeof (str) - 1);
+              write (fd, str, sizeof (str) - 1);
               count = 0;        /* => close connection */
               break;
             }
@@ -801,13 +575,14 @@ can_read_command (Connection * n, void *h)
         {
           IRPacket *k;
           *ci->end++ = '\0';
+	  /* ">symname" to transmit 'symname' */
           if (ci->buffer[0] == '>')
             {
-              k = transmit_button (n->server, ci->buffer+1);
+              k = transmit_button (ci->si, ci->buffer+1);
               if (k)
                 {
-                  write (n->fd, "ok\n", 3);
-                  if (si->verbose)
+                  write (fd, "ok\n", 3);
+                  if (ci->si->verbose)
                     {
                       fprintf (stdout, "Command '%s' gets packet: ", ci->buffer);
                       irpacket_printf (stdout, k);
@@ -820,23 +595,24 @@ can_read_command (Connection * n, void *h)
                 {
                   char b2[BUFSIZ];
                   sprintf (b2, "Unknown button '%s'\n", ci->buffer);
-                  write (n->fd, b2, strlen (b2));
+                  write (fd, b2, strlen (b2));
                 }
             }
+	  /* "=symname" to set the symbol for unknown packets to 'symname' */
           else if (ci->buffer[0] == '=')
             {
-              if (si->verbose)
+              if (ci->si->verbose)
                 fprintf (stdout, "Setting UNKWOWN key to '%s'\n", &ci->buffer[1]);
-              if (si->unknown_key)
-                free (si->unknown_key);
-              si->unknown_key = strdup (&ci->buffer[1]);
+              if (ci->si->unknown_key)
+                free (ci->si->unknown_key);
+              ci->si->unknown_key = strdup (&ci->buffer[1]);
             }
           else
             {
-              if (si->verbose)
+              if (ci->si->verbose)
                 fprintf (stdout, "Command port gets '%s'\n", ci->buffer);
-              if (handle_button(n->server, ci->buffer))
-                write (n->fd, "ok\n", 3);
+              if (handle_button(ci->si, ci->buffer))
+                write (fd, "ok\n", 3);
             }
 
           ci->end = ci->buffer;
@@ -844,9 +620,8 @@ can_read_command (Connection * n, void *h)
     }
   if (count == 0)
     {
-      free (n->id);
       free (ci->buffer);
-      close (n->fd);
+      close (fd);
       connection_remove (n);
     }
 }
@@ -854,19 +629,14 @@ can_read_command (Connection * n, void *h)
 void
 can_read_cmdport (Connection * n, void *h)
 {
-  int nfd = accept (n->fd, NULL, NULL);
+  int nfd = accept (connection_fd (n), NULL, NULL);
+  IRServerInfo *si = (IRServerInfo *)h;
   Connection *n2;
-  char buffer[BUFSIZ];
-  IRConnectionInfo *ci2;
   /* Set non-blocking */
   fcntl (nfd, F_SETFL, fcntl (nfd, F_GETFL) | O_NONBLOCK);
-  n2 = new_cmdconnection (n->server, nfd);
-  ci2 = (IRConnectionInfo *)n2->h;
-  n2->can_read = can_read_command;
-  sprintf (buffer, "cmd connection %d", nfd);
-  n2->id = strdup (buffer);
-  ci2->buffer = malloc (sizeof (char) * BUFSIZ);
-  ci2->end = ci2->buffer;
+  n2 = new_cmdconnection (si, nfd,
+			  new_irconnectioninfo (si));
+  connection_set_can_read(n2, can_read_command);
 }
 
 
@@ -1257,9 +1027,9 @@ read_config (ServerOpts *opts, IRServerInfo *si, const char *file)
  * VLC remote connection
  */
 bool
-vlc_command (Connection * n, const char *command)
+vlc_command (IRServerInfo *si, const char *command)
 {
-  IRServerInfo *si = (IRServerInfo *)n->server->h;
+  Connection *n = si->vlc;
   if (n)
     {
       connection_write (n, command, strlen (command));
@@ -1278,15 +1048,16 @@ void
 can_read_vlc (Connection *n, void *h)
 {
   char buffer[BUFSIZ];
-  int count = read (n->fd, buffer, BUFSIZ);
-  IRServerInfo *si = (IRServerInfo *)n->server->h;
+  int fd = connection_fd (n);
+  int count = read (fd, buffer, BUFSIZ);
+  IRServerInfo *si = (IRServerInfo *)h;
 
   if (count == 0)
     {
       if (si->vlc != n)
         fatal (0, "can_read_vlc(n): n != n->server->vlc");
       si->vlc = NULL;
-      close (n->fd);
+      close (fd);
       connection_remove (n);
     }
   fprintf (stdout, "VLC response:\n");
@@ -1296,29 +1067,24 @@ can_read_vlc (Connection *n, void *h)
 }
 
 Connection *
-open_vlc (Server *v, char *host, int port)
+open_vlc (IRServerInfo *si, char *host, int port)
 {
   Connection *vlc;
-  IRServerInfo *si = (IRServerInfo *)v->h;
+  int fd;
   if (si->verbose)
     fprintf (stdout, "Opening VLC port %s:%d\n", host, port);
-  vlc = connection_port (v, host, port);
-  if (!vlc || vlc->fd == -1)
+  vlc = connection_port (si->server, host, port, si);
+  if (!vlc)
+    return NULL;
+  fd = connection_fd (vlc);
+  if (fd == -1)
     return NULL;
 
   /* Set it non-blocking */
-  fcntl (vlc->fd, F_SETFL, fcntl (vlc->fd, F_GETFL) | O_NONBLOCK);
-  vlc->id = "VLC remote";
-  vlc->can_read = can_read_vlc;
+  fcntl (fd, F_SETFL, fcntl (fd, F_GETFL) | O_NONBLOCK);
+  connection_set_can_read(vlc, can_read_vlc);
   si->vlc = vlc;
   return vlc;
-}
-
-bool
-send_vlc_command (Server * v, const char *command)
-{
-  IRServerInfo *si = (IRServerInfo *)v->h;
-  return vlc_command (si->vlc, command);
 }
 
 
@@ -1327,9 +1093,9 @@ send_vlc_command (Server * v, const char *command)
  */
 
 bool
-mythremote_command (Connection * n, const char *command)
+mythremote_command (IRServerInfo *si, const char *command)
 {
-  IRServerInfo *si = (IRServerInfo *)n->server->h;
+  Connection *n = si->mythremote;
   if (n)
     {
       connection_write (n, command, strlen (command));
@@ -1348,15 +1114,16 @@ void
 can_read_mythremote (Connection * n, void *h)
 {
   char buffer[BUFSIZ];
-  int count = read (n->fd, buffer, BUFSIZ);
-  IRServerInfo *si = (IRServerInfo *)n->server->h;
+  int fd = connection_fd (n);
+  int count = read (fd, buffer, BUFSIZ);
+  IRServerInfo *si = (IRServerInfo *)h;
 
   if (count == 0)
     {
       if (si->mythremote != n)
         fatal (0, "can_read_mythremote(n): n != n->server->mythremote");
       si->mythremote = NULL;
-      close (n->fd);
+      close (fd);
       connection_remove (n);
     }
   fprintf (stdout, "mythtv response:\n");
@@ -1366,40 +1133,36 @@ can_read_mythremote (Connection * n, void *h)
 }
 
 Connection *
-open_mythremote (Server * v, char *host, int port)
+open_mythremote (IRServerInfo *si, char *host, int port)
 {
-  IRServerInfo *si = (IRServerInfo *)v->h;
   Connection *mythremote;
+  int fd;
   if (si->verbose)
     fprintf (stdout, "Opening MythRemote port %s:%d\n", host, port);
-  mythremote = connection_port (v, host, port);
-  if (!mythremote || mythremote->fd == -1)
+  mythremote = connection_port (si->server, host, port, si);
+  if (!mythremote)
+    return NULL;
+  fd = connection_fd (mythremote);
+  if (fd == -1)
     return NULL;
 
   /* Set it non-blocking */
-  fcntl (mythremote->fd, F_SETFL,
-         fcntl (mythremote->fd, F_GETFL) | O_NONBLOCK);
-  mythremote->id = "myth remote";
-  mythremote->can_read = can_read_mythremote;
+  fcntl (fd, F_SETFL,
+         fcntl (fd, F_GETFL) | O_NONBLOCK);
+  connection_set_can_read (mythremote, can_read_mythremote);
   si->mythremote = mythremote;
   return mythremote;
 }
 
-bool
-send_myth_command (Server * v, const char *command)
-{
-  return mythremote_command (((IRServerInfo *)v->h)->mythremote, command);
-}
 
 /* ------------------------------------------------------------
  * IR connection
  */
 
 IRPacket *
-transmit_button (Server * v, const char *button)
+transmit_button (IRServerInfo *si, const char *button)
 {
   IRPacket *k;
-  IRServerInfo *si = (IRServerInfo *)v->h;
   k = irdict_lookup_name (si->buttondict, button);
   if (k)
     {
@@ -1429,20 +1192,21 @@ transmit_button (Server * v, const char *button)
       if (si->irdev)
         {
           char response[3];
+	  int fd = connection_fd (si->irdev);
           connection_write (si->irdev, buffer, len);
 
           /* Temporarily set the connection blocking. Blugh. */
-          fcntl (si->irdev->fd, F_SETFL,
-                 fcntl (si->irdev->fd, F_GETFL) & ~O_NONBLOCK);
+          fcntl (fd, F_SETFL,
+                 fcntl (fd, F_GETFL) & ~O_NONBLOCK);
 
           /* Read the return message */
-          read (si->irdev->fd, response, 3);
+          read (fd, response, 3);
           fprintf (stdout, "Returned %d (%c) %d %d\n",
                    response[0], response[0], response[1], response[2]);
 
           /* Set blocking again */
-          fcntl (si->irdev->fd, F_SETFL,
-                 fcntl (si->irdev->fd, F_GETFL) | O_NONBLOCK);
+          fcntl (fd, F_SETFL,
+                 fcntl (fd, F_GETFL) | O_NONBLOCK);
         }
       else if (si->verbose)
         {
@@ -1456,10 +1220,9 @@ transmit_button (Server * v, const char *button)
 
 /* Receive a button-press packet */
 void
-receive_button (Connection * n, const char *name)
+receive_button (IRServerInfo *si, Connection * n, const char *name)
 {
   bool repeated = false;
-  IRServerInfo *si = (IRServerInfo *)n->server->h;
 
   /* Some remotes use a 'repeat last keypress' symbol. Detect this and
    * repeat the last keypress we emitted. 
@@ -1505,7 +1268,7 @@ receive_button (Connection * n, const char *name)
   
   /* First press of a new/different button, or after repeat time
      has elapsed.  */
-  handle_button (n->server, name);
+  handle_button (si, name);
   if (repeated)
     {
       /* Accelerate repeat time */
@@ -1546,8 +1309,9 @@ can_read_ir (Connection * n, void *h)
   IRPacket *k;
   int count;
   unsigned char c;
-  IRServerInfo *si = (IRServerInfo *)n->server;
-  count = read (n->fd, &c, 1);
+  IRServerInfo *si = (IRServerInfo *)h;
+  int fd = connection_fd (n);
+  count = read (fd, &c, 1);
   if (count != 0)
     {
       count = irstate_rxbytes (si->ir, 1, &c, &k);
@@ -1576,7 +1340,7 @@ can_read_ir (Connection * n, void *h)
               fflush (si->out_file);
             }
           if (name)
-            receive_button (n, name);
+            receive_button (si, n, name);
           else if (si->verbose)
             fprintf (stdout, "Unknown packet\n");
         }
@@ -1585,7 +1349,7 @@ can_read_ir (Connection * n, void *h)
     {
       if (si->verbose)
         fprintf (stdout, "Closed IR connection\n");
-      close (n->fd);
+      close (fd);
       if (si->irdev != n)
         fatal (0, "can_read_ir(n): n != si->irdev");
       si->irdev = NULL;
@@ -1596,7 +1360,7 @@ can_read_ir (Connection * n, void *h)
 void
 timeout_ir (Connection * n, void *h)
 {
-  IRServerInfo *si = (IRServerInfo *)n->server;
+  IRServerInfo *si = (IRServerInfo *)h;
   IRPacket *k = irstate_timeout (si->ir);
 
   if (k)
@@ -1623,7 +1387,7 @@ timeout_ir (Connection * n, void *h)
       if (name)
         {
           fprintf (stdout, "Button name '%s'\n", name);
-          receive_button (n, name);
+          receive_button (si, n, name);
         }
       else
         {
@@ -1641,7 +1405,7 @@ timeout_ir (Connection * n, void *h)
  */
 
 Connection *
-open_uinput (Server * v, const char *dev)
+open_uinput (IRServerInfo *si, const char *dev)
 {
 #ifdef USE_UINPUT
   int fd;
@@ -1649,7 +1413,7 @@ open_uinput (Server * v, const char *dev)
   struct uinput_user_dev uinp;
   int i;
 
-  if (((IRServerInfo *)v->h)->verbose)
+  if (si->verbose)
     fprintf (stdout, "Opening uinput device '%s'\n", dev);
   fd = open (dev, O_WRONLY);
   if (fd < 0)
@@ -1675,8 +1439,7 @@ open_uinput (Server * v, const char *dev)
       fatal (0, "Cannot create uinput device");
     }
 
-  n = new_connection (v, fd);
-  n->id = "uinput";
+  n = new_connection (si->server, fd, "uinput", si);
 
   return n;
 #else
@@ -1689,15 +1452,16 @@ uinput_key (Connection * n, int key, int value)
 {
 #ifdef USE_UINPUT
   struct input_event ev;
+  int fd = connection_fd (n);
   memset (&ev, '\0', sizeof ev);
   ev.type = EV_KEY;
   ev.code = key;
   ev.value = value;
-  write (n->fd, &ev, sizeof ev);
+  write (fd, &ev, sizeof ev);
   ev.type = EV_SYN;
   ev.code = 0;
   ev.value = 0;
-  write (n->fd, &ev, sizeof ev);
+  write (fd, &ev, sizeof ev);
 #endif
 }
 
@@ -1710,9 +1474,8 @@ uinput_key_press (Connection * n, int key)
 
 #ifdef USE_UINPUT
 bool
-send_keypress (Server * v, int key)
+send_keypress (IRServerInfo *si, int key)
 {
-  IRServerInfo *si = (IRServerInfo *)v->h;
   if (si->uinput)
     {
       uinput_key_press (si->uinput, key);
@@ -1723,9 +1486,8 @@ send_keypress (Server * v, int key)
 }
 
 bool
-send_key (Server * v, int key, int value)
+send_key (IRServerInfo *si, int key, int value)
 {
-  IRServerInfo *si = (IRServerInfo *)v->h;
   if (si->uinput)
     {
       uinput_key (si->uinput, key, value);
@@ -1735,8 +1497,8 @@ send_key (Server * v, int key, int value)
     return false;
 }
 #else
-#define send_key(v,k,v1) (0)
-#define send_keypress(v,k) (0)
+#define send_key(si,k,v1) (0)
+#define send_keypress(si,k) (0)
 #endif
 
 
@@ -1827,7 +1589,7 @@ MultiTapState *multitap_current_state;
 #endif /* USE_UINPUT */
 
 bool
-multitap_tap (Server * v, int key)
+multitap_tap (IRServerInfo *si, int key)
 {
 #ifdef USE_UINPUT
   struct timeval now;
@@ -1854,7 +1616,7 @@ multitap_tap (Server * v, int key)
   if (multitap_current_state)
     {
       /* delete last inserted char */
-      send_keypress (v, KEY_BACKSPACE);
+      send_keypress (si, KEY_BACKSPACE);
       /* advance to next state state */
       if (multitap_current_state->loop)
         multitap_current_state = multitap_current_state->loop;
@@ -1870,7 +1632,7 @@ multitap_tap (Server * v, int key)
   /* insert char for new state */
   if (multitap_current_state)
     {
-      send_keypress (v, multitap_current_state->key);
+      send_keypress (si, multitap_current_state->key);
       return true;
     }
 #endif /* USE_UINPUT */
@@ -1884,9 +1646,8 @@ multitap_tap (Server * v, int key)
 
 #define TRACE(x...) do { if (si->verbose) fprintf (stdout, x); } while (0)
 
-Action *find_action_for_button (Server *v, const char *button)
+Action *find_action_for_button (IRServerInfo *si, const char *button)
 {
-  IRServerInfo *si = (IRServerInfo *)v->h;
   Keymap *km = si->current_keymap;
   Action *a = NULL;
   /* Search through keymaps until we find an action. */
@@ -1920,9 +1681,8 @@ Action *find_action_for_button (Server *v, const char *button)
   return a;
 }
 
-void server_action (Server *v, Action *a)
+void server_action (IRServerInfo *si, Action *a)
 {
-  IRServerInfo *si = (IRServerInfo *)v->h;
   while (a) {
     switch (a->id)
       {
@@ -1932,13 +1692,13 @@ void server_action (Server *v, Action *a)
         mac_key (a->operand);
         break;
       case action_multitap:
-        multitap_tap (v, a->operand[0]);
+        multitap_tap (si, a->operand[0]);
         break;
       case action_mythtv:
-        send_myth_command (v, a->operand);
+        mythremote_command (si, a->operand);
         break;
       case action_transmit:
-        transmit_button (v, a->operand);
+        transmit_button (si, a->operand);
         break;
       case action_set_keymap:
         si->current_keymap = dict_get (si->keymaps, a->operand);
@@ -1948,7 +1708,7 @@ void server_action (Server *v, Action *a)
           fatal (0, "Cannot find keymap '%s'\n", a->operand);
         break;
       case action_vlc:
-        vlc_command(si->vlc, a->operand);
+        vlc_command(si, a->operand);
         break;
       case action_applescript:
         osascript (a->operand);
@@ -1963,16 +1723,15 @@ void server_action (Server *v, Action *a)
 /* This is the biggie. Decode commands and map them to actions.
  */
 bool
-handle_button (Server * v, const char *button)
+handle_button (IRServerInfo *si, const char *button)
 {
-  IRServerInfo *si = (IRServerInfo *)v->h;
   Action *a;
   if (si->verbose)
     fprintf (stdout, "Got button press '%s'\n", button);
-  a = find_action_for_button (v, button);
+  a = find_action_for_button (si, button);
   if (a)
     {
-      server_action (v, a);
+      server_action (si, a);
       return true;
     }
   else
@@ -1984,91 +1743,91 @@ handle_button (Server * v, const char *button)
     {
       /* Numbers: same everywhere. */
     case k_dvd_0: case k_dvdrw_0:
-      return send_myth_command (v, "key 0") || multitap_tap (v, '0')
-        || send_keypress (v, KEY_0) || mac_key("0");
+      return mythremote_command (si, "key 0") || multitap_tap (si, '0')
+        || send_keypress (si, KEY_0) || mac_key("0");
     case k_dvd_1: case k_dvdrw_1:
-      return send_myth_command (v, "key 1") || multitap_tap (v, '1')
-        || send_keypress (v, KEY_1) || mac_key("1");
+      return mythremote_command (si, "key 1") || multitap_tap (si, '1')
+        || send_keypress (si, KEY_1) || mac_key("1");
     case k_dvd_2: case k_dvdrw_2:
-      return send_myth_command (v, "key 2") || multitap_tap (v, '2')
-        || send_keypress (v, KEY_2) || mac_key("2");
+      return mythremote_command (si, "key 2") || multitap_tap (si, '2')
+        || send_keypress (si, KEY_2) || mac_key("2");
     case k_dvd_3: case k_dvdrw_3:
-      return send_myth_command (v, "key 3") || multitap_tap (v, '3')
-        || send_keypress (v, KEY_3) || mac_key("3");
+      return mythremote_command (si, "key 3") || multitap_tap (si, '3')
+        || send_keypress (si, KEY_3) || mac_key("3");
     case k_dvd_4:
     case k_dvdrw_4:
-      return send_myth_command (v, "key 4") || multitap_tap (v, '4')
-        || send_keypress (v, KEY_4) || mac_key("4");
+      return mythremote_command (si, "key 4") || multitap_tap (si, '4')
+        || send_keypress (si, KEY_4) || mac_key("4");
     case k_dvd_5:
     case k_dvdrw_5:
-      return send_myth_command (v, "key 5") || multitap_tap (v, '5')
-        || send_keypress (v, KEY_5) || mac_key("5");
+      return mythremote_command (si, "key 5") || multitap_tap (si, '5')
+        || send_keypress (si, KEY_5) || mac_key("5");
     case k_dvd_6:
     case k_dvdrw_6:
-      return send_myth_command (v, "key 6") || multitap_tap (v, '6')
-        || send_keypress (v, KEY_6) || mac_key("6");
+      return mythremote_command (si, "key 6") || multitap_tap (si, '6')
+        || send_keypress (si, KEY_6) || mac_key("6");
     case k_dvd_7:
     case k_dvdrw_7:
-      return send_myth_command (v, "key 7") || multitap_tap (v, '7')
-        || send_keypress (v, KEY_7) || mac_key("7");
+      return mythremote_command (si, "key 7") || multitap_tap (si, '7')
+        || send_keypress (si, KEY_7) || mac_key("7");
     case k_dvd_8:
     case k_dvdrw_8:
-      return send_myth_command (v, "key 8") || multitap_tap (v, '8')
-        || send_keypress (v, KEY_8) || mac_key("8");
+      return mythremote_command (si, "key 8") || multitap_tap (si, '8')
+        || send_keypress (si, KEY_8) || mac_key("8");
     case k_dvd_9:
     case k_dvdrw_9:
-      return send_myth_command (v, "key 9") || multitap_tap (v, '9')
-        || send_keypress (v, KEY_9) || mac_key("9");
+      return mythremote_command (si, "key 9") || multitap_tap (si, '9')
+        || send_keypress (si, KEY_9) || mac_key("9");
 
       /* Navigation is more or less universal. */
     case k_dvd_left:
     case k_dvdrw_left:
-      return send_myth_command (v, "key left")
-        || send_vlc_command (v, "rewind") || send_keypress (v, KEY_LEFT)
+      return mythremote_command (si, "key left")
+        || vlc_command (si, "rewind") || send_keypress (si, KEY_LEFT)
         || mac_key ("LeftArrow");
     case k_dvd_right:
     case k_dvdrw_right:
-      return send_myth_command (v, "key right")
-        || send_vlc_command (v, "fastforward")
-        || send_keypress (v, KEY_RIGHT)
+      return mythremote_command (si, "key right")
+        || vlc_command (si, "fastforward")
+        || send_keypress (si, KEY_RIGHT)
         || mac_key ("RightArrow");
     case k_dvd_up:
     case k_dvdrw_up:
-      return send_myth_command (v, "key up") || send_keypress (v, KEY_UP)
+      return mythremote_command (si, "key up") || send_keypress (si, KEY_UP)
         || mac_key ("UpArrow");
     case k_dvd_down:
     case k_dvdrw_down:
-      return send_myth_command (v, "key down") || send_keypress (v, KEY_DOWN)
+      return mythremote_command (si, "key down") || send_keypress (si, KEY_DOWN)
         || mac_key ("DownArrow");
     case k_dvd_ok:
     case k_dvdrw_ok:
-      return send_myth_command (v, "key enter")
-        || send_keypress (v, KEY_ENTER)
+      return mythremote_command (si, "key enter")
+        || send_keypress (si, KEY_ENTER)
         || mac_key ("Return");
 
       /* Old DVD remote for MythTV etc. */
     case k_dvd_next:
-      return send_myth_command (v, "key end") || send_keypress (v, KEY_COMMA);
+      return mythremote_command (si, "key end") || send_keypress (si, KEY_COMMA);
     case k_dvd_prev:
-      return send_myth_command (v, "key home") || send_keypress (v, KEY_DOT);
+      return mythremote_command (si, "key home") || send_keypress (si, KEY_DOT);
     case k_dvd_stop:
-      return send_keypress (v, KEY_X);
+      return send_keypress (si, KEY_X);
     case k_dvd_power:
-      return send_keypress (v, KEY_S);
+      return send_keypress (si, KEY_S);
     case k_dvd_title:
       return
-        send_myth_command (v, "key escape") || send_keypress (v, KEY_ESC);
+        mythremote_command (si, "key escape") || send_keypress (si, KEY_ESC);
     case k_dvd_pause:
-      return send_myth_command (v, "key p") || send_vlc_command (v, "play")
-        || send_keypress (v, KEY_SPACE);
-      return send_keypress (v, KEY_P);
+      return mythremote_command (si, "key p") || vlc_command (si, "play")
+        || send_keypress (si, KEY_SPACE);
+      return send_keypress (si, KEY_P);
     case k_dvd_menu:
-      return send_myth_command (v, "key m") || send_keypress (v, KEY_TAB);
-      return send_keypress (v, KEY_C);
+      return mythremote_command (si, "key m") || send_keypress (si, KEY_TAB);
+      return send_keypress (si, KEY_C);
     case k_dvd_display:
-      return send_myth_command (v, "key i") || send_keypress (v, KEY_M);
+      return mythremote_command (si, "key i") || send_keypress (si, KEY_M);
     case k_dvd_subtitle:
-      return send_keypress (v, KEY_T);  /* or T? */
+      return send_keypress (si, KEY_T);  /* or T? */
 
 
       /* DVDRW remote to control Kodi
@@ -2079,30 +1838,30 @@ handle_button (Server * v, const char *button)
        * 'esc' -- back up menus. Not needed really.
        */
     case k_dvdrw_last:
-      return send_keypress (v, KEY_COMMA);
+      return send_keypress (si, KEY_COMMA);
     case k_dvdrw_first:
-      return send_keypress (v, KEY_DOT);
+      return send_keypress (si, KEY_DOT);
 
     case k_dvdrw_disc:
-      return send_keypress (v, KEY_BACKSPACE)
+      return send_keypress (si, KEY_BACKSPACE)
         || mac_key("Escape");
     case k_dvdrw_system:
-      return send_keypress (v, KEY_TAB);
+      return send_keypress (si, KEY_TAB);
 
       /* Mash random buttons: on-screen controls */
     case k_dvdrw_top_menu:
     case k_dvdrw_edit:
     case k_dvdrw_select:
-      return send_keypress (v, KEY_M) || mac_key("M");
+      return send_keypress (si, KEY_M) || mac_key("M");
 
     case k_dvdrw_stop:
-      return send_keypress (v, KEY_X);
+      return send_keypress (si, KEY_X);
     case k_dvdrw_pause:
-      return send_keypress (v, KEY_SPACE) || mac_key(" ");
+      return send_keypress (si, KEY_SPACE) || mac_key(" ");
     case k_dvdrw_play:
-      return send_keypress (v, KEY_P) || mac_key("P");
+      return send_keypress (si, KEY_P) || mac_key("P");
     case k_dvdrw_subtitle:
-      return send_keypress (v, KEY_T) || mac_key("S");
+      return send_keypress (si, KEY_T) || mac_key("S");
     case k_dvdrw_audio:
       return mac_key("A");
 
@@ -2125,7 +1884,6 @@ idle (Connection * n, void *h)
 int
 main_server (ServerOpts * opts)
 {
-  Server *v;
   Connection *cmdsock = NULL;
   Connection *irdev = NULL;
   struct timeval last_check;
@@ -2133,9 +1891,8 @@ main_server (ServerOpts * opts)
 
   gettimeofday (&last_check, NULL);
 
-  v = new_irserver ();
-  si = (IRServerInfo *)v->h;
-
+  si = new_irserverinfo ();
+  si->server = new_server (si);
   si->buttondict = new_irdict ();
   si->ir = new_irstate ();
 
@@ -2143,6 +1900,7 @@ main_server (ServerOpts * opts)
     read_config (opts, si, opts->config_file);
 
   si->verbose = opts->verbose;
+  server_set_timeout (si->server, ir_packet_timeout);
 
   /* Read in a button dictionary if provided */
   if (opts->buttondict_fname)
@@ -2155,8 +1913,8 @@ main_server (ServerOpts * opts)
       IRSymbol *m;
       if (!opts->daemon && isatty (fileno (stdout)))
         {
-          idler = new_connection (v, 0);
-          idler->timeout = idle;
+          idler = new_connection (si->server, 0, "idler", si);
+	  connection_set_timeout(idler, idle);
         }
 
       fprintf (stdout, "cmdport: %d\n", opts->cmdport);
@@ -2176,9 +1934,8 @@ main_server (ServerOpts * opts)
   /* Open command server port */
   if (opts->cmdport)
     {
-      cmdsock = server_listenport (v, opts->cmdport, 10);
-      cmdsock->can_read = can_read_cmdport;
-      cmdsock->id = "cmdsock";
+      cmdsock = server_listenport (si->server, opts->cmdport, 10, si);
+      connection_set_can_read (cmdsock, can_read_cmdport);
     }
 
   /* Open infrared device */
@@ -2189,24 +1946,23 @@ main_server (ServerOpts * opts)
       fd = si->ir->fd;
       if (fd == -1)
         fatal (0, "Can't open device '%s'\n", opts->irdev);
-      irdev = new_connection (v, fd);
-      irdev->can_read = can_read_ir;
-      irdev->timeout = timeout_ir;
-      irdev->id = "irdev";
+      irdev = new_connection (si->server, fd, "irdev", si);
+      connection_set_can_read (irdev, can_read_ir);
+      connection_set_timeout (irdev, timeout_ir);
       si->irdev = irdev;
     }
 
   /* Open myth remote port */
   if (opts->frontend_host)
-    open_mythremote (v, opts->frontend_host, opts->frontend_port);
+    open_mythremote (si, opts->frontend_host, opts->frontend_port);
 
   /* Open VLC remote */
   if (opts->vlc_host)
-    open_vlc (v, opts->vlc_host, opts->vlc_port);
+    open_vlc (si, opts->vlc_host, opts->vlc_port);
 
   /* Open uinput device */
   if (opts->uinput_dev)
-    si->uinput = open_uinput (v, opts->uinput_dev);
+    si->uinput = open_uinput (si, opts->uinput_dev);
 
   /* Open dump file if any */
   if (opts->out_file)
@@ -2264,16 +2020,16 @@ main_server (ServerOpts * opts)
             {
               if (si->verbose)
                 fprintf (stdout, "Trying to connect to myth...\n");
-              open_mythremote (v, opts->frontend_host, opts->frontend_port);
+              open_mythremote (si, opts->frontend_host, opts->frontend_port);
             }
           if (opts->vlc_host && !si->vlc)
             {
               if (si->verbose)
                 fprintf (stdout, "Trying to connect to VLC...\n");
-              open_vlc (v, opts->vlc_host, opts->vlc_port);
+              open_vlc (si, opts->vlc_host, opts->vlc_port);
             }
         }
-      server_select (v);
+      server_select (si->server);
     }
 
   return 0;

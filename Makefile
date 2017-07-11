@@ -1,10 +1,10 @@
 CFLAGS += -Wall
-CFLAGS += -ggdb
+CFLAGS += -g # -ggdb
 CFLAGS += -Itoolbag/dict
 
 INDENT = indent -nut
 
-OBJS=irtoy_tool.o toolbag/dict/dict.o irtoy.o error.o keywords.o mac_actions.o
+OBJS=irtoy_tool.o toolbag/dict/dict.o irtoy.o error.o keywords.o mac_actions.o server.o
 
 
 # Linking
@@ -16,9 +16,11 @@ irtoy_tool.defs: irtoy_tool.c mk_defs.pl
 		perl ./mk_defs.pl irtoy_tool.c > irtoy_tool.defs
 
 dict.o:		toolbag/dict/dict.c	toolbag/dict/dict.h
+server.o:	server.h
 error.o:	error.h
 keywords.o:	keywords.h toolbag/dict/dict.h keywords.inc
-irtoy_tool.o:	error.h irtoy.h toolbag/dict/dict.h keywords.h keywords.inc mac_actions.h
+irtoy_tool.o:	error.h irtoy.h toolbag/dict/dict.h keywords.h \
+		keywords.inc mac_actions.h server.h
 mac_actions.o:	mac_actions.h
 
 indent:
