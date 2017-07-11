@@ -1,7 +1,7 @@
 #!/bin/sh
 cd `dirname "$0"`
 while true; do
-  ./mythtv_irtoy -v -f config.myth
+  ./irtoy_tool -v -f config.macpro
   sleep 3
 done
 
