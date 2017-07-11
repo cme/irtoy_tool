@@ -77,7 +77,7 @@ new_connection (Server * v, int fd, char *id, void *h)
   if (!v->first)
     v->first = n;
   v->last = n;
-  v->h = h;
+  n->h = h;
 
   return n;
 }
