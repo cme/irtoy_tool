@@ -10,7 +10,7 @@
 ### END INIT INFO
 
 NAME=irtoy
-DAEMON=/usr/bin/mythtv_irtoy
+DAEMON=/usr/bin/irtoy_tool
 DESC="IRToy interface controller"
 PIDFILE=/var/run/$NAME.pid
 IRTOY_CONFIG=/etc/irtoy.config
