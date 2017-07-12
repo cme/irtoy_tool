@@ -205,22 +205,26 @@ bool mac_key(const char *name)
   if (shift || control || command)
     {
       /* Use the modifier format */
+      const char shift_str[] = "shift down", control_str[] = "control down",
+        command_str[] = "command down", comma_str[] = ", ";
       const char fmt[] = "tell application \"System Events\" to"
         " %s using { %s%s%s%s%s }";
-      buffer = malloc (sizeof (fmt) + 60);
+      buffer = malloc (sizeof (fmt) + strlen (verb_buffer) + 
+                       sizeof shift_str + sizeof control_str + 
+                       sizeof command_str + 2 * sizeof comma_str);
       sprintf (buffer, fmt, verb_buffer,
-               shift?"shift down":"",
-               (shift && (control||command))?", ":"",
-               control?"control down":"",
-               (control && command)?", ":"",
-               command?"command down":"");
+               shift?shift_str:"",
+               (shift && (control||command))?comma_str:"",
+               control?control_str:"",
+               (control && command)?comma_str:"",
+               command?command_str:"");
       osascript (buffer);
       free (buffer);
     }
   else
     {
       const char fmt[] = "tell application \"System Events\" to %s";
-      buffer = malloc(11 + sizeof fmt);
+      buffer = malloc(strlen(verb_buffer) + sizeof fmt);
       sprintf(buffer, fmt, verb_buffer);
       osascript(buffer);
       free(buffer);
