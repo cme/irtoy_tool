@@ -13,6 +13,7 @@ debounce_time 333333            # usecs of continuous signal before repeat
 # Buttons
 include dvdrw.buttons
 include tivo.buttons
+include panasonictv.buttons
 
 # Key mappings
 keymap default
