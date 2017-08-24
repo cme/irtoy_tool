@@ -1,5 +1,5 @@
 CFLAGS += -Wall
-CFLAGS += -g -O2
+CFLAGS += -ggdb -O2
 CFLAGS += -Itoolbag/dict
 
 INDENT = indent -nut

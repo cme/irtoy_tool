@@ -364,7 +364,7 @@ analyse_packet_files (int n, char **name)
         if (keep[x] && scores[x] > 0)
           {
             kept++;
-            printf ("button %s ", names[x]);
+            printf ("keycode %s ", names[x]);
             irpacket_printf (stdout, packets[x]);
             printf (" # p%d score %d\n", x, scores[x]);
           }
@@ -646,7 +646,7 @@ can_read_cmdport (Connection * n, void *h)
 
 typedef enum ActionID {
   action_keypress, action_multitap, action_mythtv, action_transmit,
-  action_set_keymap, action_vlc, action_applescript
+  action_set_keymap, action_vlc, action_applescript, action_key_action
 } ActionID;
 
 struct Action
@@ -665,10 +665,16 @@ new_action (ActionID id, const char *operand) {
   return a;
 }
 
+typedef struct InheritedKeymap InheritedKeymap;
+struct InheritedKeymap {
+  const char *mapname;
+  Keymap *map;
+  InheritedKeymap *next;
+};
+
 struct Keymap {
   const char *name;
-  const char *inherit_name;
-  Keymap *inherit;
+  InheritedKeymap *inherit;
   Dict *mapping;                /* char* -> Action* */
 };
 
@@ -677,7 +683,6 @@ new_keymap (const char *name) {
   Keymap *km = malloc (sizeof *km);
   km->name = strdup (name);
   km->mapping = dict_new (NULL);
-  km->inherit_name = NULL;
   km->inherit = NULL;
   return km;
 }
@@ -715,7 +720,7 @@ struct ServerOpts
  *         | "irdev" string
  *         | "frontend" string
  *         | "frontend_port" integer
- *         | "button" string packet
+ *         | "keycode" string packet
  *         | "cmdport" integer
  *         | "include" string
  *         | "out_file" string
@@ -791,7 +796,7 @@ read_buttondict (ServerOpts *opts, IRServerInfo *si, const char *file)
       char buffer[BUFSIZ];
       if (!fscanf (in, "%s", buffer) || feof (in))
         break;
-      if (!strcmp (buffer, "button")) {
+      if (!strcmp (buffer, "keycode")) {
         IRPacket *k;
         char *id;
         id = read_string (in);
@@ -825,7 +830,7 @@ void write_buttondict (ServerOpts *opts, IRServerInfo *si, const char *file)
     fatal(0, "Can't write button dictionary file '%s'\n", file);
   for (s = si->buttondict->first; s; s = s->next)
   {
-    fprintf (out, "button %s ", s->name);
+    fprintf (out, "keycode %s ", s->name);
     irpacket_printf (out, s->packet);
     fprintf (out, "\n");
   }
@@ -848,6 +853,8 @@ read_action (FILE *in)
     return new_action(action_set_keymap, read_string (in));
   case k_vlc:
     return new_action(action_vlc, read_string (in));
+  case k_key_action:
+    return new_action(action_key_action, read_string (in));
   case k_begin: {
     /* Read an action sequence */
     Action *a, *last_a = NULL, *first_a = NULL;
@@ -906,13 +913,19 @@ read_keymap (FILE *in)
           break;
         case k_inherit:
           free (id);
-          if (km->inherit_name)
-            fatal (1, "Duplicate inherit statement in keymap '%s'\n",
-                   km->name);
-          km->inherit_name = read_string (in);
+          fprintf (stderr, "Adding inherit in keymap '%s'\n", km->name);
+          InheritedKeymap **tail = &(km->inherit);
+          while (*tail) {
+            fprintf (stderr, "  skip past map '%s'\n", (*tail)->mapname);
+            tail = &( (*tail)->next );
+          }
+          *tail = malloc (sizeof **tail);
+          (*tail)->mapname = read_string (in);
+          (*tail)->next = NULL;
+          (*tail)->map = NULL;
           break;
         default:
-          fatal (1, "Unknown keyword '%s' in keymap", id);
+          fatal (1, "Unknown keyword '%s' in keymap '%s'", id, km->name);
           return NULL;
         }
     }
@@ -939,7 +952,7 @@ read_config (ServerOpts *opts, IRServerInfo *si, const char *file)
 
       switch (decode_keyword(buffer))
         {
-        case k_button:
+        case k_keycode:
           {
             IRPacket *k;
             char *id;
@@ -1646,39 +1659,39 @@ multitap_tap (IRServerInfo *si, int key)
 
 #define TRACE(x...) do { if (si->verbose) fprintf (stdout, x); } while (0)
 
+Action *find_action_for_button_in_keymap (IRServerInfo *si, const char *button,
+                                          Keymap *km)
+{
+  Action *a = NULL;
+  InheritedKeymap *ikm;
+  if (si->verbose)
+    fprintf (stdout, "Find action for '%s' in keymap '%s'\n",
+             button, km->name);
+  a = dict_get (km->mapping, button);
+  if (a)
+    return a;
+  /* Search inherited keymaps. */
+  for (ikm = km->inherit; ikm; ikm = ikm->next) {
+    if (ikm->mapname && !ikm->map)
+      {
+        ikm->map = dict_get (si->keymaps, ikm->mapname);
+        if (!ikm->map)
+          warning ("Can't find keymap '%s' (from keymap '%s')\n",
+                   ikm->mapname, km->name);
+      }
+    if (si->verbose)
+      fprintf (stdout, "Find '%s' in keymap '%s' inherited by '%s'\n",
+               button, ikm->mapname, km->name);
+    a = find_action_for_button_in_keymap (si, button, ikm->map);
+    if (a)
+      return a;
+  }
+  return NULL;
+}
+
 Action *find_action_for_button (IRServerInfo *si, const char *button)
 {
-  Keymap *km = si->current_keymap;
-  Action *a = NULL;
-  /* Search through keymaps until we find an action. */
-  while (km && !a)
-    {
-      Keymap *last_km = km;
-      TRACE("Decode button '%s' with keymap '%s'\n", button, km->name);
-      a = dict_get(km->mapping, button);
-      if (!a)
-        {
-          if (km->inherit)
-            km = km->inherit;
-          else if (km->inherit_name)
-            {
-              km->inherit = dict_get (si->keymaps, km->inherit_name);
-              if (!km->inherit)
-                warning ("Can't find keymap '%s' (from keymap '%s')\n",
-                         km->inherit_name, km->name);
-              km = km->inherit;
-            }
-          else
-            /* No more keymaps to search. */
-            km = NULL;
-          if (km) TRACE ("Decode with inherited keymap '%s'\n",
-                         km->name);
-          if (km == si->current_keymap)
-            fatal (1, "Loop in keymap inheritance, '%s' includes '%s'\n",
-                   last_km->name, km->name);
-        }
-    }
-  return a;
+  return find_action_for_button_in_keymap (si, button, si->current_keymap);
 }
 
 void server_action (IRServerInfo *si, Action *a)
@@ -1713,6 +1726,9 @@ void server_action (IRServerInfo *si, Action *a)
       case action_applescript:
         osascript (a->operand);
         break;
+      case action_key_action:
+        handle_button(si, a->operand);
+        break;
       }
     /* Next action in sequence */
     a = a->next;
@@ -1736,138 +1752,10 @@ handle_button (IRServerInfo *si, const char *button)
     }
   else
     {
-      TRACE ("Cannot find button '%s' via keymap, reverting to old routine\n",
+      TRACE ("Cannot find button '%s' via keymap\n",
              button);
     }
-  switch (decode_keyword(button))
-    {
-      /* Numbers: same everywhere. */
-    case k_dvd_0: case k_dvdrw_0:
-      return mythremote_command (si, "key 0") || multitap_tap (si, '0')
-        || send_keypress (si, KEY_0) || mac_key("0");
-    case k_dvd_1: case k_dvdrw_1:
-      return mythremote_command (si, "key 1") || multitap_tap (si, '1')
-        || send_keypress (si, KEY_1) || mac_key("1");
-    case k_dvd_2: case k_dvdrw_2:
-      return mythremote_command (si, "key 2") || multitap_tap (si, '2')
-        || send_keypress (si, KEY_2) || mac_key("2");
-    case k_dvd_3: case k_dvdrw_3:
-      return mythremote_command (si, "key 3") || multitap_tap (si, '3')
-        || send_keypress (si, KEY_3) || mac_key("3");
-    case k_dvd_4:
-    case k_dvdrw_4:
-      return mythremote_command (si, "key 4") || multitap_tap (si, '4')
-        || send_keypress (si, KEY_4) || mac_key("4");
-    case k_dvd_5:
-    case k_dvdrw_5:
-      return mythremote_command (si, "key 5") || multitap_tap (si, '5')
-        || send_keypress (si, KEY_5) || mac_key("5");
-    case k_dvd_6:
-    case k_dvdrw_6:
-      return mythremote_command (si, "key 6") || multitap_tap (si, '6')
-        || send_keypress (si, KEY_6) || mac_key("6");
-    case k_dvd_7:
-    case k_dvdrw_7:
-      return mythremote_command (si, "key 7") || multitap_tap (si, '7')
-        || send_keypress (si, KEY_7) || mac_key("7");
-    case k_dvd_8:
-    case k_dvdrw_8:
-      return mythremote_command (si, "key 8") || multitap_tap (si, '8')
-        || send_keypress (si, KEY_8) || mac_key("8");
-    case k_dvd_9:
-    case k_dvdrw_9:
-      return mythremote_command (si, "key 9") || multitap_tap (si, '9')
-        || send_keypress (si, KEY_9) || mac_key("9");
-
-      /* Navigation is more or less universal. */
-    case k_dvd_left:
-    case k_dvdrw_left:
-      return mythremote_command (si, "key left")
-        || vlc_command (si, "rewind") || send_keypress (si, KEY_LEFT)
-        || mac_key ("LeftArrow");
-    case k_dvd_right:
-    case k_dvdrw_right:
-      return mythremote_command (si, "key right")
-        || vlc_command (si, "fastforward")
-        || send_keypress (si, KEY_RIGHT)
-        || mac_key ("RightArrow");
-    case k_dvd_up:
-    case k_dvdrw_up:
-      return mythremote_command (si, "key up") || send_keypress (si, KEY_UP)
-        || mac_key ("UpArrow");
-    case k_dvd_down:
-    case k_dvdrw_down:
-      return mythremote_command (si, "key down") || send_keypress (si, KEY_DOWN)
-        || mac_key ("DownArrow");
-    case k_dvd_ok:
-    case k_dvdrw_ok:
-      return mythremote_command (si, "key enter")
-        || send_keypress (si, KEY_ENTER)
-        || mac_key ("Return");
-
-      /* Old DVD remote for MythTV etc. */
-    case k_dvd_next:
-      return mythremote_command (si, "key end") || send_keypress (si, KEY_COMMA);
-    case k_dvd_prev:
-      return mythremote_command (si, "key home") || send_keypress (si, KEY_DOT);
-    case k_dvd_stop:
-      return send_keypress (si, KEY_X);
-    case k_dvd_power:
-      return send_keypress (si, KEY_S);
-    case k_dvd_title:
-      return
-        mythremote_command (si, "key escape") || send_keypress (si, KEY_ESC);
-    case k_dvd_pause:
-      return mythremote_command (si, "key p") || vlc_command (si, "play")
-        || send_keypress (si, KEY_SPACE);
-      return send_keypress (si, KEY_P);
-    case k_dvd_menu:
-      return mythremote_command (si, "key m") || send_keypress (si, KEY_TAB);
-      return send_keypress (si, KEY_C);
-    case k_dvd_display:
-      return mythremote_command (si, "key i") || send_keypress (si, KEY_M);
-    case k_dvd_subtitle:
-      return send_keypress (si, KEY_T);  /* or T? */
-
-
-      /* DVDRW remote to control Kodi
-       * Generally most useful non-direct control keys are:
-       * 'm' -- on-screen controls
-       * 'tab' -- toggle between menus and playback
-       * 'backspace' -- back: probably what 'esc' should have been.
-       * 'esc' -- back up menus. Not needed really.
-       */
-    case k_dvdrw_last:
-      return send_keypress (si, KEY_COMMA);
-    case k_dvdrw_first:
-      return send_keypress (si, KEY_DOT);
-
-    case k_dvdrw_disc:
-      return send_keypress (si, KEY_BACKSPACE)
-        || mac_key("Escape");
-    case k_dvdrw_system:
-      return send_keypress (si, KEY_TAB);
-
-      /* Mash random buttons: on-screen controls */
-    case k_dvdrw_top_menu:
-    case k_dvdrw_edit:
-    case k_dvdrw_select:
-      return send_keypress (si, KEY_M) || mac_key("M");
-
-    case k_dvdrw_stop:
-      return send_keypress (si, KEY_X);
-    case k_dvdrw_pause:
-      return send_keypress (si, KEY_SPACE) || mac_key(" ");
-    case k_dvdrw_play:
-      return send_keypress (si, KEY_P) || mac_key("P");
-    case k_dvdrw_subtitle:
-      return send_keypress (si, KEY_T) || mac_key("S");
-    case k_dvdrw_audio:
-      return mac_key("A");
-
-    default:
-      return false;
-    }
+  return false;
 }
 
 void
@@ -1899,6 +1787,16 @@ main_server (ServerOpts * opts)
   if (opts->config_file)
     read_config (opts, si, opts->config_file);
 
+  {
+    DictEntry *kmde;
+    for (kmde = dict_first(si->keymaps); kmde; kmde = dict_next(si->keymaps, kmde)) {
+      Keymap *km = kmde->value;
+      printf("Map: '%s'\n", (const char *)kmde->key);
+      dict_dumpf(km->mapping, stdout, "%s: %p");
+    }
+  }
+
+
   si->verbose = opts->verbose;
   server_set_timeout (si->server, ir_packet_timeout);
 
@@ -1925,7 +1823,7 @@ main_server (ServerOpts * opts)
       fprintf (stdout, "IR symbol dictionary\n");
       for (m = si->buttondict->first; m; m = m->next)
         {
-          fprintf (stdout, "button %s ", m->name);
+          fprintf (stdout, "keycode %s ", m->name);
           irpacket_printf (stdout, m->packet);
           fprintf (stdout, "\n");
         }

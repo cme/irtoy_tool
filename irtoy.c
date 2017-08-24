@@ -59,6 +59,11 @@ irpacket_printf (FILE * out, IRPacket * k)
   /* Print it out */
   int i;
   bool expected_value = true;
+  if (!k)
+    {
+      fprintf (out, "NULL");
+      return;
+    }
   fprintf (out, " { ");
   for (i = 0; i < k->n_pulses; i++)
     {
@@ -71,6 +76,56 @@ irpacket_printf (FILE * out, IRPacket * k)
       expected_value = !expected_value;
     }
   fprintf (out, "} ");
+}
+
+void
+irpacket_decode (IRPacket * k)
+{
+#define IMUL(x, f) (((int)(512 * (f)) * x ) / 512)
+  int i;
+  int packet_len = 0;
+  int min_width = 0;
+  int max_bits = 0;
+  int min_bits = 0;
+  int min_res = 2;              /* minimum resolution of +/- 2 */
+  const double proportional_error = 1.1;
+  
+  for (i = 0; i < k->n_pulses; i++)
+    {
+      packet_len += k->pulses[i].width;
+      if (k->pulses[i].width < min_width || min_width == 0)
+        min_width = k->pulses[i].width;
+    }
+
+  printf("Decode packet: "); irpacket_printf(stdout, k);
+  printf("\n"); irpacket_render(stdout, k);
+  printf("\nMinimum pulse width = %d, total packet time = %d\n",
+         min_width, packet_len);
+
+  /* Minimum number of bits: there *must* be at least as many bits as
+     there were pulses. Also, the minimum size of a pulse might set a
+     lower bound: a pulse can be at most one bit wide, give or take. */
+  if (IMUL(min_width, 0.9) > 0)
+    min_bits = packet_len / (IMUL(min_width, 0.9));
+  else
+    min_bits = packet_len;
+  
+  printf("First guess at min bits: %d (by min pulse width)\n", min_bits);
+  if (min_bits < k->n_pulses)
+    {
+      printf("Number of bits must be at least number of pulses, so %d\n",
+             k->n_pulses);
+      min_bits = k->n_pulses;
+    }
+  /* Maximum bits: our minimum resolution is +/- 3. If bits are any
+     smaller than that, we stand no chance of recognising them. */
+  max_bits = packet_len / (2 * min_res);
+  printf("Can only fit %d bits (of min size %d) in %d time.\n",
+         max_bits, 2*min_res, packet_len);
+
+  printf("Packet has somewhere between %d and %d bits.\n", min_bits, max_bits);
+
+#undef IMUL
 }
 
 void
@@ -214,6 +269,8 @@ irdict_insert (IRDict * d, const char *name, IRPacket * k)
   d->first = s;
   if (!dict_has_key (d->by_name, name))
     dict_insert (d->by_name, name, s);
+  //XXX
+  irpacket_decode(k);
 }
 
 /* ------------------------------------------------------------

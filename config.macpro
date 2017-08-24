@@ -62,7 +62,42 @@ keymap default
 
   key tivo_power keypress "command+q"
 
+
+  # Panasonic TV remote codes
+
+  key tv_left key_action tivo_left
+  key tv_right key_action tivo_right
+  key tv_down key_action tivo_down
+  key tv_up key_action tivo_up
+  key tv_ok key_action tivo_ok
+  key tv_return key_action tivo_back
+  key tv_exit key_action tivo_home
+
+  key tv_red key_action tivo_red
+  key tv_green key_action tivo_green
+  key tv_blue key_action tivo_blue
+  key tv_yellow key_action tivo_yellow
+
+  key tv_play key_action tivo_play
+  key tv_stop key_action tivo_stop
+  key tv_pause key_action tivo_pause
+  key tv_ffwd key_action tivo_forward
+  key tv_rewind key_action tivo_rewind
+
+  key tv_input_aspect key_action TVTOPMENU
+  key tv_option key_action TVMENU
+  key tv_sdcard key_action TVMENU
+  key tv_text key_action TVMENU
+  key tv_hold key_action TVMENU
+  key tv_index key_action TVMENU
+  key tv_stl key_action TVMENU
+  key tv_input_av key_action TVMENU
+
+  key TVMENU set_keymap default_tvmenu
+  key TVTOPMENU set_keymap default_tvtopmenu
 end
+
+
 
 # Keymap for VLC
 keymap vlc
@@ -91,6 +126,9 @@ keymap vlc
   key tivo_stop keypress command+.
   key tivo_pause keypress Space
 
+  key TVMENU set_keymap vlc_tvmenu
+  key TVTOPMENU set_keymap vlc_tvtopmenu
+
 end
 
 keymap kodi
@@ -102,6 +140,9 @@ keymap kodi
   key tivo_play keypress ANSI_P
   key tivo_home keypress ANSI_H
   key tivo_zoom keypress ANSI_Backslash
+
+  key TVMENU set_keymap kodi_tvmenu
+  key TVTOPMENU set_keymap kodi_tvtopmenu
 end
 
 keymap plex
@@ -130,4 +171,75 @@ keymap plex
   key tivo_voldown keypress ANSI_KeypadMinus
   key tivo_mute keypress ANSI_A # Cycle audio tracks
 
+  key TVMENU set_keymap plex_tvmenu
+  key TVTOPMENU set_keymap plex_tvtopmenu
+end
+
+
+# Keymaps for when the TV is stuck in a menu...
+
+keymap tvmenu
+  key tv_up key_action nop
+  key tv_down key_action nop
+  key tv_left key_action nop
+  key tv_right key_action nop
+  key tv_ok key_action nop
+  # Exits lead north, south, west and up.
+  key tv_exit key_action EXIT_MENU
+end
+
+# A top-level TV menu, which will also exit when 'ok' is pressed.
+keymap tvtopmenu
+  inherit tvmenu
+  key tv_ok key_action EXIT_MENU
+  key tv_return key_action EXIT_MENU
+end
+
+
+keymap vlc_tvmenu
+  inherit tvmenu
+  inherit vlc
+  key EXIT_MENU set_keymap vlc
+end
+
+keymap plex_tvmenu
+  inherit tvmenu
+  inherit plex
+  key EXIT_MENU set_keymap plex
+end
+
+keymap kodi_tvmenu
+  inherit tvmenu
+  inherit kodi
+  key EXIT_MENU set_keymap kodi
+end
+
+keymap default_tvmenu
+  inherit tvmenu
+  inherit default
+  key EXIT_MENU set_keymap default
+end
+
+keymap vlc_tvtopmenu
+  inherit tvtopmenu
+  inherit vlc
+  key EXIT_MENU set_keymap vlc
+end
+
+keymap plex_tvtopmenu
+  inherit tvtopmenu
+  inherit plex
+  key EXIT_MENU set_keymap plex
+end
+
+keymap kodi_tvtopmenu
+  inherit tvtopmenu
+  inherit kodi
+  key EXIT_MENU set_keymap kodi
+end
+
+keymap default_tvtopmenu
+  inherit tvtopmenu
+  inherit default
+  key EXIT_MENU set_keymap default
 end
